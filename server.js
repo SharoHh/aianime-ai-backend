@@ -7,7 +7,11 @@ const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash-lite'
 
 const app = express()
 app.disable('x-powered-by')
-app.use(express.json({ limit: '800kb' }))
+app.use(express.json({ limit: '300kb' }))
+
+const GEMINI_COOLDOWN_MS = Math.min(Math.max(Number(process.env.GEMINI_429_COOLDOWN_MS || process.env.AI_BACKEND_429_COOLDOWN_MS || 10 * 60 * 1000), 60 * 1000), 30 * 60 * 1000)
+const GEMINI_COOLDOWN = globalThis.__aianimeGeminiCooldown || { until: 0, status: null, reason: '' }
+globalThis.__aianimeGeminiCooldown = GEMINI_COOLDOWN
 
 function corsHeaders(){
   return {
@@ -94,7 +98,7 @@ function geminiModelPath(model){
 }
 
 function buildPromptPayload(body){
-  const candidates = Array.isArray(body?.candidates) ? body.candidates.slice(0, Number(process.env.AI_BACKEND_CANDIDATE_LIMIT || 220)) : []
+  const candidates = Array.isArray(body?.candidates) ? body.candidates.slice(0, Math.min(Math.max(Number(process.env.AI_BACKEND_CANDIDATE_LIMIT || 20), 8), 24)) : []
   return {
     user_query: String(body?.user_query || body?.query || '').trim(),
     rules: Array.isArray(body?.rules) ? body.rules : [],
@@ -105,14 +109,9 @@ function buildPromptPayload(body){
       originalTitle: item?.originalTitle || null,
       year: item?.year || null,
       episodes: item?.episodes || null,
-      status: item?.status || null,
-      kind: item?.kind || null,
-      genres: Array.isArray(item?.genres) ? item.genres.slice(0, 8) : [],
-      studio: item?.studio || null,
-      rating: item?.rating || null,
+      genres: Array.isArray(item?.genres) ? item.genres.slice(0, 3) : [],
       localScore: Number(item?.localScore || 0) || 0,
-      localReason: item?.localReason || '',
-      description: item?.description || ''
+      localReason: truncateText(item?.localReason || '', 52),
     })).filter(item => item.slug)
   }
 }
@@ -144,15 +143,19 @@ function localPayload(promptPayload, body, reason, meta = {}){
 }
 
 function systemPrompt(){
-  return 'Ты умный рекомендатель аниме для AIanime. Верни строго JSON вида {"summary":"...","results":[{"slug":"...","match":90,"reason":"..."}]}. Выбирай только из candidates. Нужно 8-12 тайтлов, если кандидатов достаточно. Разбирай естественные русские фразы, кривой ввод, вайб, отрицания, похожесть на другой тайтл, сеттинг, характер героя. Не придумывай slug. reason пиши коротко по-русски.'
+  return 'Ты рекомендатель аниме AIanime. Верни только JSON: {"summary":"...","results":[{"slug":"...","match":90,"reason":"..."}]}. Выбирай только из candidates. До 8 результатов. Не придумывай slug. reason до 12 слов.'
 }
 
 async function recommendGemini(promptPayload, body, model){
   const apiKey = String(process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY || '').trim()
   if(!apiKey) return localPayload(promptPayload, body, 'Gemini API key не задан на AI-backend, показан локальный запасной подбор.', { reason:'missing_gemini_api_key' })
 
+  if(Date.now() < Number(GEMINI_COOLDOWN.until || 0)){
+    return localPayload(promptPayload, body, 'Gemini временно на лимите, показан быстрый запасной подбор.', { provider:'gemini', ok:false, status:GEMINI_COOLDOWN.status || 429, error:GEMINI_COOLDOWN.reason || 'gemini_cooldown' })
+  }
+
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), Number(process.env.GEMINI_TIMEOUT_MS || process.env.AI_BACKEND_TIMEOUT_MS || 12000))
+  const timeout = setTimeout(() => controller.abort(), Math.min(Number(process.env.GEMINI_TIMEOUT_MS || process.env.AI_BACKEND_TIMEOUT_MS || 5500), 7000))
 
   try{
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModelPath(model)}:generateContent?key=${encodeURIComponent(apiKey)}`, {
@@ -163,8 +166,9 @@ async function recommendGemini(promptPayload, body, model){
         systemInstruction: { parts: [{ text: systemPrompt() }] },
         contents: [{ role:'user', parts:[{ text: JSON.stringify(promptPayload) }] }],
         generationConfig: {
-          temperature: 0.25,
-          maxOutputTokens: 1400,
+          temperature: 0.18,
+          topP: 0.75,
+          maxOutputTokens: Math.min(Math.max(Number(process.env.GEMINI_MAX_OUTPUT_TOKENS || process.env.AI_BACKEND_MAX_OUTPUT_TOKENS || 520), 300), 700),
           responseMimeType: 'application/json'
         }
       })
@@ -174,7 +178,12 @@ async function recommendGemini(promptPayload, body, model){
 
     if(!response.ok){
       const errorText = await response.text().catch(() => '')
-      return localPayload(promptPayload, body, 'Gemini сейчас не ответил, показан локальный запасной подбор.', { provider:'gemini', ok:false, status:response.status, error:truncateText(errorText || response.statusText, 420) })
+      if(response.status === 429){
+        GEMINI_COOLDOWN.until = Date.now() + GEMINI_COOLDOWN_MS
+        GEMINI_COOLDOWN.status = 429
+        GEMINI_COOLDOWN.reason = 'Gemini quota/rate limit cooldown'
+      }
+      return localPayload(promptPayload, body, 'Gemini сейчас на лимите, показан быстрый запасной подбор.', { provider:'gemini', ok:false, status:response.status, error:truncateText(errorText || response.statusText, 420) })
     }
 
     const data = await response.json().catch(() => null)
@@ -187,7 +196,7 @@ async function recommendGemini(promptPayload, body, model){
         source:'external-gemini',
         model: data?.modelVersion || model,
         summary: truncateText(parsed.summary || 'Gemini подобрал тайтлы по смыслу запроса.', 220),
-        results: Array.isArray(parsed.results) ? parsed.results.slice(0, 12) : [],
+        results: Array.isArray(parsed.results) ? parsed.results.slice(0, 8) : [],
         meta: { provider:'gemini', ok:true, usage:data?.usageMetadata || null }
       }
     }
@@ -215,7 +224,7 @@ async function recommendOpenAI(promptPayload, body, model){
       body: JSON.stringify({
         model,
         store: false,
-        max_output_tokens: 1600,
+        max_output_tokens: Math.min(Math.max(Number(process.env.OPENAI_MAX_OUTPUT_TOKENS || process.env.AI_BACKEND_MAX_OUTPUT_TOKENS || 650), 300), 900),
         input: [
           { role: 'developer', content: [{ type: 'input_text', text: systemPrompt() }] },
           { role: 'user', content: [{ type:'input_text', text: JSON.stringify(promptPayload) }] }
@@ -270,7 +279,7 @@ async function recommendOpenAI(promptPayload, body, model){
         source:'external-openai',
         model: data?.model || model,
         summary: truncateText(parsed.summary || 'OpenAI подобрал тайтлы по смыслу запроса.', 220),
-        results: Array.isArray(parsed.results) ? parsed.results.slice(0, 12) : [],
+        results: Array.isArray(parsed.results) ? parsed.results.slice(0, 8) : [],
         meta: { provider:'openai', ok:true, usage:data?.usage || null }
       }
     }
