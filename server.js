@@ -122,7 +122,6 @@ async function recommend(body){
       body: JSON.stringify({
         model,
         store: false,
-        temperature: 0.25,
         max_output_tokens: 1700,
         input: [
           {
