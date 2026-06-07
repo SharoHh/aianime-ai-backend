@@ -200,9 +200,9 @@ async function recommend(body){
 app.options('*any', (req, res) => sendJson(res, 204, {}))
 
 app.get('/', (req, res) => sendJson(res, 200, { ok:true, service:'aianime-ai-backend', routes:['/health','/recommend'] }))
-app.get('/health', (req, res) => sendJson(res, 200, { ok:true, service:'aianime-ai-backend', runtime: process.env.VERCEL ? 'vercel' : 'node' }))
+app.get(['/health','/api/health'], (req, res) => sendJson(res, 200, { ok:true, service:'aianime-ai-backend', runtime: process.env.VERCEL ? 'vercel' : 'node' }))
 
-app.post('/recommend', async (req, res) => {
+app.post(['/recommend','/api/recommend'], async (req, res) => {
   if(!checkSecret(req)) return sendJson(res, 401, { ok:false, error:'bad_ai_secret' })
   try{
     const result = await recommend(req.body || {})

@@ -59,3 +59,18 @@ AI_RECOMMEND_ENDPOINT=https://YOUR-VERCEL-DOMAIN.vercel.app/recommend
 AI_RECOMMEND_SECRET=Aianime_ai_backend_secret_2026
 AI_RECOMMEND_TIMEOUT_MS=45000
 ```
+
+
+## Vercel fallback routes
+
+If `/health` or `/recommend` returns 404, test native Vercel routes:
+
+```bash
+curl -s https://YOUR-VERCEL-DOMAIN.vercel.app/api/health
+```
+
+For the main AIanime site you can use the native endpoint:
+
+```env
+AI_RECOMMEND_ENDPOINT=https://YOUR-VERCEL-DOMAIN.vercel.app/api/recommend
+```
