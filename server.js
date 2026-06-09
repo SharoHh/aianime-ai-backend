@@ -89,24 +89,35 @@ function backendFranchiseKey(item = {}){
 }
 
 function diversifyBackendItems(items = [], limit = 12){
+  const source = items.filter(item => item?.slug)
   const counts = new Map()
   const selected = []
-  for(const item of items){
-    const key = backendFranchiseKey(item)
-    const current = counts.get(key) || 0
-    if(current >= 2) continue
-    counts.set(key, current + 1)
-    selected.push(item)
-    if(selected.length >= limit) break
-  }
-  if(selected.length < limit){
-    const used = new Set(selected.map(item => item.slug))
-    for(const item of items){
-      if(used.has(item.slug)) continue
+  const used = new Set()
+
+  const pushPass = (cap) => {
+    for(const item of source){
+      const slug = String(item.slug)
+      if(used.has(slug)) continue
+      const key = backendFranchiseKey(item)
+      const current = counts.get(key) || 0
+      if(current >= cap) continue
+      counts.set(key, current + 1)
       selected.push(item)
-      if(selected.length >= limit) break
+      used.add(slug)
+      if(selected.length >= limit) return
     }
   }
+
+  // Keep Gemini's answer diverse before it even reaches the main site.
+  // Broad mood prompts should not become a list of seasons from one franchise.
+  pushPass(1)
+  if(selected.length < limit) pushPass(2)
+
+  const uniqueFranchises = new Set(source.map(backendFranchiseKey)).size
+  if(selected.length < limit){
+    pushPass(uniqueFranchises >= Math.min(5, limit) ? 2 : 4)
+  }
+
   return selected.slice(0, limit)
 }
 
