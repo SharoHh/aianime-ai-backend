@@ -51,6 +51,65 @@ function cleanBackendReason(reason = '', fallback = ''){
   return text
 }
 
+
+function normalizeFranchiseText(value = ''){
+  return String(value || '')
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/[^a-zа-я0-9]+/g, ' ')
+    .trim()
+}
+
+function compactFranchiseText(value = ''){
+  return normalizeFranchiseText(value).replace(/\s+/g, '')
+}
+
+function backendFranchiseKey(item = {}){
+  const blob = normalizeFranchiseText(`${item.slug || ''} ${item.title || ''} ${item.originalTitle || ''}`)
+  const known = [
+    ['aot', ['shingeki no kyojin', 'attack on titan', 'атака титанов']],
+    ['tokyo-ghoul', ['tokyo ghoul', 'токийский гуль']],
+    ['mushoku-tensei', ['mushoku tensei', 'реинкарнация безработного']],
+    ['no-game-no-life', ['no game no life', 'нет игры', 'нет жизни']],
+    ['re-zero', ['re zero', 're:zero', 'жизнь с нуля']],
+    ['one-piece', ['one piece', 'ван пис', 'ван-пис']],
+    ['naruto', ['naruto', 'наруто']],
+    ['bleach', ['bleach', 'блич']],
+    ['demon-slayer', ['kimetsu no yaiba', 'demon slayer', 'клинок']],
+    ['steins-gate', ['steins gate', 'steins;gate', 'врата штейна']],
+    ['chainsaw-man', ['chainsaw man', 'человек бензопила']],
+    ['fullmetal-alchemist', ['fullmetal alchemist', 'стальной алхимик']]
+  ]
+  for(const [key, words] of known){
+    if(words.some(word => blob.includes(normalizeFranchiseText(word)))) return key
+  }
+  return compactFranchiseText(`${item.title || item.originalTitle || item.slug || ''}`)
+    .replace(/tv|ova|ona|movie|film|season|part|final|special|тв|ова|фильм|сезон|часть|финал|спецвыпуски|спешл|[0-9]/g, '')
+    .slice(0, 80) || String(item.slug || '')
+}
+
+function diversifyBackendItems(items = [], limit = 12){
+  const counts = new Map()
+  const selected = []
+  for(const item of items){
+    const key = backendFranchiseKey(item)
+    const current = counts.get(key) || 0
+    if(current >= 2) continue
+    counts.set(key, current + 1)
+    selected.push(item)
+    if(selected.length >= limit) break
+  }
+  if(selected.length < limit){
+    const used = new Set(selected.map(item => item.slug))
+    for(const item of items){
+      if(used.has(item.slug)) continue
+      selected.push(item)
+      if(selected.length >= limit) break
+    }
+  }
+  return selected.slice(0, limit)
+}
+
 function parseOpenAiText(data){
   if(data?.output_text) return String(data.output_text)
   const parts = []
@@ -112,7 +171,8 @@ function geminiModelPath(model){
 }
 
 function buildPromptPayload(body){
-  const candidates = Array.isArray(body?.candidates) ? body.candidates.slice(0, Math.min(Math.max(Number(process.env.AI_BACKEND_CANDIDATE_LIMIT || 20), 8), 24)) : []
+  const rawCandidates = Array.isArray(body?.candidates) ? body.candidates : []
+  const candidates = diversifyBackendItems(rawCandidates, Math.min(Math.max(Number(process.env.AI_BACKEND_CANDIDATE_LIMIT || 20), 8), 24))
   return {
     user_query: String(body?.user_query || body?.query || '').trim(),
     rules: Array.isArray(body?.rules) ? body.rules : [],
@@ -131,10 +191,9 @@ function buildPromptPayload(body){
 }
 
 function localResults(promptPayload, limit = 12){
-  return promptPayload.candidates
+  return diversifyBackendItems(promptPayload.candidates
     .slice()
-    .sort((a,b) => Number(b.localScore || 0) - Number(a.localScore || 0))
-    .slice(0, Math.min(Math.max(Number(limit || 12), 1), 12))
+    .sort((a,b) => Number(b.localScore || 0) - Number(a.localScore || 0)), Math.min(Math.max(Number(limit || 12), 1), 12))
     .map(item => ({
       slug: item.slug,
       match: Math.min(96, Math.max(62, Math.round(68 + Number(item.localScore || 0) / 20))),
@@ -157,7 +216,7 @@ function localPayload(promptPayload, body, reason, meta = {}){
 }
 
 function systemPrompt(){
-  return 'Ты живой аниме-куратор AIanime. Верни только JSON: {"summary":"...","results":[{"slug":"...","match":90,"reason":"..."}]}. Выбирай только из candidates, slug не придумывай. Сначала пойми человеческий смысл запроса: персонаж, настроение, похожий тайтл, ограничение. reason 14-28 слов, разный и убедительный. Запрещены шаблоны: жанры:, подходит по жанрам, короткий формат, удобный формат.'
+  return 'Ты живой аниме-куратор AIanime. Верни только JSON: {"summary":"...","results":[{"slug":"...","match":90,"reason":"..."}]}. Выбирай только из candidates, slug не придумывай. Сначала пойми человеческий смысл запроса: персонаж, настроение, похожий тайтл, ограничение. reason 14-28 слов, разный и убедительный. Для широких вайб-запросов не забивай выдачу сезонами одной франшизы: максимум 1-2 из одной серии, дальше разнообразь. Запрещены шаблоны: жанры:, подходит по жанрам, короткий формат, удобный формат.'
 }
 
 async function recommendGemini(promptPayload, body, model){
