@@ -37,6 +37,20 @@ function truncateText(value = '', limit = 260){
   return `${text.slice(0, limit - 1).trim()}…`
 }
 
+
+function normalizeReasonText(value = ''){
+  return String(value || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9]+/g, '')
+}
+
+function cleanBackendReason(reason = '', fallback = ''){
+  const text = truncateText(reason || fallback || 'Подходит по настроению запроса и выглядит самым близким вариантом из каталога.', 220)
+  const n = normalizeReasonText(text)
+  if(!text || n.includes(normalizeReasonText('жанры:')) || n.includes(normalizeReasonText('подходит по жанрам')) || n.includes(normalizeReasonText('короткий формат')) || n.includes(normalizeReasonText('удобный формат'))){
+    return truncateText(fallback || 'Подходит не по сухому жанру, а по общему вайбу запроса и ощущению от истории.', 220)
+  }
+  return text
+}
+
 function parseOpenAiText(data){
   if(data?.output_text) return String(data.output_text)
   const parts = []
@@ -111,7 +125,7 @@ function buildPromptPayload(body){
       episodes: item?.episodes || null,
       genres: Array.isArray(item?.genres) ? item.genres.slice(0, 3) : [],
       localScore: Number(item?.localScore || 0) || 0,
-      localReason: truncateText(item?.localReason || '', 52),
+      localReason: truncateText(item?.localReason || '', 90),
     })).filter(item => item.slug)
   }
 }
@@ -124,7 +138,7 @@ function localResults(promptPayload, limit = 12){
     .map(item => ({
       slug: item.slug,
       match: Math.min(96, Math.max(62, Math.round(68 + Number(item.localScore || 0) / 20))),
-      reason: truncateText(item.localReason || 'подходит по локальному смысловому подбору', 160)
+      reason: cleanBackendReason(item.localReason, 'Выбран как ближайший быстрый вариант по смыслу запроса, пока AI уточняет выдачу.')
     }))
 }
 
@@ -143,7 +157,7 @@ function localPayload(promptPayload, body, reason, meta = {}){
 }
 
 function systemPrompt(){
-  return 'Ты рекомендатель аниме AIanime. Верни только JSON: {"summary":"...","results":[{"slug":"...","match":90,"reason":"..."}]}. Выбирай только из candidates. До 8 результатов. Не придумывай slug. reason до 12 слов.'
+  return 'Ты живой аниме-куратор AIanime. Верни только JSON: {"summary":"...","results":[{"slug":"...","match":90,"reason":"..."}]}. Выбирай только из candidates, slug не придумывай. Сначала пойми человеческий смысл запроса: персонаж, настроение, похожий тайтл, ограничение. reason 14-28 слов, разный и убедительный. Запрещены шаблоны: жанры:, подходит по жанрам, короткий формат, удобный формат.'
 }
 
 async function recommendGemini(promptPayload, body, model){
@@ -168,7 +182,7 @@ async function recommendGemini(promptPayload, body, model){
         generationConfig: {
           temperature: 0.18,
           topP: 0.75,
-          maxOutputTokens: Math.min(Math.max(Number(process.env.GEMINI_MAX_OUTPUT_TOKENS || process.env.AI_BACKEND_MAX_OUTPUT_TOKENS || 520), 300), 700),
+          maxOutputTokens: Math.min(Math.max(Number(process.env.GEMINI_MAX_OUTPUT_TOKENS || process.env.AI_BACKEND_MAX_OUTPUT_TOKENS || 640), 300), 700),
           responseMimeType: 'application/json'
         }
       })
