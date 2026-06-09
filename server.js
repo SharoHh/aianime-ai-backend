@@ -42,11 +42,30 @@ function normalizeReasonText(value = ''){
   return String(value || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9]+/g, '')
 }
 
-function cleanBackendReason(reason = '', fallback = ''){
-  const text = truncateText(reason || fallback || 'Подходит по настроению запроса и выглядит самым близким вариантом из каталога.', 220)
+function backendHumanReason(item = {}, query = ''){
+  const blob = normalizeReasonText(`${item.slug || ''} ${item.title || ''} ${item.originalTitle || ''}`)
+  const q = normalizeReasonText(query)
+
+  if(q.includes('мрач') || q.includes('слом') || q.includes('тащ') || q.includes('психолог') || q.includes('триллер')){
+    if(blob.includes('shingekinokyojin') || blob.includes('атакатитанов')) return 'Здесь герой проходит через потери, страх и моральный надлом, но продолжает двигаться вперёд, когда мир уже разваливается.'
+    if(blob.includes('monster') || blob.includes('монстр')) return 'Тянет именно психологическим грузом: герой не супермен, а человек, который несёт вину и всё равно идёт за правдой.'
+    if(blob.includes('steinsgate') || blob.includes('враташтейна')) return 'Подойдёт, если нужен герой, которого ломают последствия его решений, но он снова и снова пытается всё исправить.'
+    if(blob.includes('tokyoghoul') || blob.includes('токийскийгуль')) return 'История попадает в запрос через потерю себя, голод, страх и попытку остаться человеком в нечеловеческом мире.'
+    if(blob.includes('berserk') || blob.includes('берсерк')) return 'Самый тяжёлый вариант про выживание на ярости и боли: герой сломан, но именно это делает его опасным.'
+    if(blob.includes('chainsaw') || blob.includes('бензопил')) return 'Мрачный и нервный экшен, где герой держится на простых желаниях, пока вокруг всё становится жестоким и грязным.'
+    if(blob.includes('inuyashiki') || blob.includes('инуяшики')) return 'Работает как история про сломанную жизнь и неожиданную силу, которую герой использует не ради красивой позы.'
+    if(blob.includes('rezero') || blob.includes('жизньснуля')) return 'Здесь героя ломают страхом и повторяющейся болью, но он всё равно возвращается и пытается спасти других.'
+  }
+
+  return 'Выбран как ближайший быстрый вариант по человеческому смыслу запроса, пока Gemini временно недоступен.'
+}
+
+function cleanBackendReason(reason = '', fallback = '', item = {}, query = ''){
+  const humanFallback = backendHumanReason(item, query)
+  const text = truncateText(reason || fallback || humanFallback, 220)
   const n = normalizeReasonText(text)
-  if(!text || n.includes(normalizeReasonText('жанры:')) || n.includes(normalizeReasonText('подходит по жанрам')) || n.includes(normalizeReasonText('короткий формат')) || n.includes(normalizeReasonText('удобный формат'))){
-    return truncateText(fallback || 'Подходит не по сухому жанру, а по общему вайбу запроса и ощущению от истории.', 220)
+  if(!text || n.includes(normalizeReasonText('жанры:')) || n.includes(normalizeReasonText('подходит по жанрам')) || n.includes(normalizeReasonText('короткий формат')) || n.includes(normalizeReasonText('удобный формат')) || n.includes(normalizeReasonText('подойдет если хочется не просто экшен'))){
+    return truncateText(humanFallback || fallback || 'Выбран по общему вайбу запроса, а не по сухому совпадению жанров.', 220)
   }
   return text
 }
@@ -88,7 +107,7 @@ function backendFranchiseKey(item = {}){
     .slice(0, 80) || String(item.slug || '')
 }
 
-function diversifyBackendItems(items = [], limit = 12){
+function diversifyBackendItems(items = [], limit = 12, query = ''){
   const source = items.filter(item => item?.slug)
   const counts = new Map()
   const selected = []
@@ -115,7 +134,10 @@ function diversifyBackendItems(items = [], limit = 12){
 
   const uniqueFranchises = new Set(source.map(backendFranchiseKey)).size
   if(selected.length < limit){
-    pushPass(uniqueFranchises >= Math.min(5, limit) ? 2 : 4)
+    // Для широких вайб-запросов не расширяем cap выше 2, если есть из чего выбирать.
+    const q = normalizeReasonText(query)
+    const broadMood = q.includes('мрач') || q.includes('слом') || q.includes('тащ') || q.includes('психолог') || q.includes('триллер') || q.length > 25
+    pushPass(broadMood && uniqueFranchises >= Math.min(4, limit) ? 2 : 3)
   }
 
   return selected.slice(0, limit)
@@ -202,13 +224,14 @@ function buildPromptPayload(body){
 }
 
 function localResults(promptPayload, limit = 12){
+  const query = String(promptPayload?.user_query || '')
   return diversifyBackendItems(promptPayload.candidates
     .slice()
-    .sort((a,b) => Number(b.localScore || 0) - Number(a.localScore || 0)), Math.min(Math.max(Number(limit || 12), 1), 12))
+    .sort((a,b) => Number(b.localScore || 0) - Number(a.localScore || 0)), Math.min(Math.max(Number(limit || 12), 1), 12), query)
     .map(item => ({
       slug: item.slug,
       match: Math.min(96, Math.max(62, Math.round(68 + Number(item.localScore || 0) / 20))),
-      reason: cleanBackendReason(item.localReason, 'Выбран как ближайший быстрый вариант по смыслу запроса, пока AI уточняет выдачу.')
+      reason: cleanBackendReason(item.localReason, 'Выбран как ближайший быстрый вариант по смыслу запроса, пока AI уточняет выдачу.', item, query)
     }))
 }
 
